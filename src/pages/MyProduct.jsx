@@ -1,38 +1,86 @@
-import React, { useState, useEffect, useContext } from 'react';
+import React, { useState, useEffect, useContext, useRef } from 'react';
 import $ from 'jquery';
 import 'select2/dist/css/select2.min.css';
 import 'select2/dist/js/select2.min.js';
 import select2 from 'select2';
+import debounce from 'lodash/debounce';
 select2($);
-import { useGetCategoriesQuery, useAddProductMutation } from '../features/otherApis/otherApisSlice';
+import { useGetCategoriesQuery, useAddProductMutation, useGetProductsQuery } from '../features/otherApis/otherApisSlice';
 import { useFormik } from 'formik';
-// import { addCategoryValidationSchema } from '../utils/validation/addCategory';
 import { addProductValidationSchema } from '../utils/validation/addProduct';
 import { toast } from 'react-toastify';
 import { AuthContext } from '../contexts/AuthContext';
 
+// Custom Select2 Component
+const Select2 = ({ value, onChange, options, placeholder }) => {
+  const selectRef = useRef();
 
-// Assign jQuery to the global scope
-// window.$ = window.jQuery = $;
+  useEffect(() => {
+    const $select = $(selectRef.current);
+    $select.select2({
+      placeholder: placeholder,
+      allowClear: true
+    });
+
+    $select.on('select2:select select2:unselect', (e) => {
+      onChange({
+        target: {
+          name: 'category',
+          value: e.target.value
+        }
+      });
+    });
+
+    $select.val(value).trigger('change');
+
+    return () => {
+      $select.off('select2:select select2:unselect');
+      $select.select2('destroy');
+    };
+  }, [value, onChange]);
+  
+
+  return (
+    <select ref={selectRef} value={value} onChange={() => { }}>
+      <option value="">Select category</option>
+      {options?.map((item) => (
+        <option key={item.id} value={item.id}>
+          {item.name}
+        </option>
+      ))}
+    </select>
+  );
+};
 
 const MyProduct = () => {
   const { user, token } = useContext(AuthContext)
-
   const [isModalOpen, setIsModalOpen] = useState(false);
-  const [addProduct] = useAddProductMutation()
+  const [addProduct] = useAddProductMutation();
+  const [filters, setFilters] = useState({ name: '', category: '' });
+  const [debouncedFilters, setDebouncedFilters] = useState(filters);
 
+  // Create debounced filters update
+  const debouncedSetFilters = useRef(
+    debounce((newFilters) => {
+      setDebouncedFilters(newFilters);
+    }, 500)
+  ).current;
+
+  // Update debounced filters when filters change
   useEffect(() => {
-    if ($.fn.select2) {
-      $('#selectCategory').select2({
-        placeholder: 'Select a category',
-        allowClear: true,
-      });
-    } else {
-      console.error('Select2 is not loaded.');
-    }
-  }, []);
-  // console.log('userDetails', user, token)
+    debouncedSetFilters(filters);
+    return () => {
+      debouncedSetFilters.cancel();
+    };
+  }, [filters]);
+
   const { data: categories, isLoading: loadingCategory, error: errorCategory } = useGetCategoriesQuery();
+  const { data: products, isLoading: loadingProducts, error: errorProducts } = useGetProductsQuery({
+    token,
+    filters: debouncedFilters
+  }, {
+    refetchOnMountOrArgChange: true
+  });
 
   const openModal = () => setIsModalOpen(true);
   const closeModal = () => setIsModalOpen(false);
@@ -46,20 +94,17 @@ const MyProduct = () => {
       image: null
     },
     validationSchema: addProductValidationSchema,
-    onSubmit: async (values, {resetForm}) => {
+    onSubmit: async (values, { resetForm }) => {
       try {
-        console.log("submitting values", values, token)
         const formData = new FormData();
         formData.append('name', values.name);
         formData.append('description', values.description);
         formData.append('price', values.price);
         formData.append('category', values.category);
-        // formData.append('token', token);
         if (values.image) {
           formData.append('image', values.image);
         }
         const response = await addProduct({ formdata: formData, token }).unwrap();
-        console.log("Hi",response)
         if (response.success) {
           toast.success(response.message)
           resetForm()
@@ -68,14 +113,18 @@ const MyProduct = () => {
           toast.error(response.message)
         }
       } catch (error) {
-        console.log('someting went wrong', error)
+        console.log('something went wrong', error)
       }
     }
   })
+
   const handleFileChange = (event) => {
-    // console.log("Image:",event)
     formik.setFieldValue('image', event.target.files[0]);
-    // formik.setFieldValue('profileImage', event.currentTarget.files[0]);
+  };
+
+  const handleInputChange = (e) => {
+    const { name, value } = e.target;
+    setFilters(prev => ({ ...prev, [name]: value }));
   };
 
   return (
@@ -96,39 +145,38 @@ const MyProduct = () => {
       </div>
 
       {/* Filter Section */}
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-2 mb-4">
         <input
           type="text"
+          name="name"
           placeholder="Search item"
           className="border border-gray-300 rounded px-4 py-2 h-10 focus:ring focus:ring-green-200"
+          value={filters.name}
+          onChange={handleInputChange}
         />
-        <select
-          name="selectCategory"
-          id="selectCategory"
-          className="border border-gray-300 rounded h-10 px-4"
-        >
-          <option value="">Select category</option>
-          {
-            categories?.data && categories?.data.map((item, index) =>
-              <option key={item.id} value={item.id}>{item.name}</option>
-            )
-          }
-        </select>
+        <Select2
+          value={filters.category}
+          onChange={handleInputChange}
+          options={categories?.data}
+          placeholder="Select a category"
+        />
+        {loadingProducts && <span>Loading...</span>}
       </div>
 
       {/* Modal */}
       {isModalOpen && (
         <div
           className="fixed inset-0 flex items-center justify-center bg-black bg-opacity-50 z-50"
-          onClick={closeModal} // Close modal when clicking outside
+          onClick={closeModal}
         >
           <div
             className="bg-white rounded-lg shadow-lg p-6 w-1/3"
-            onClick={(e) => e.stopPropagation()} // Prevent click from closing modal
+            onClick={(e) => e.stopPropagation()}
           >
             <h3 className="text-xl font-bold mb-4">Add Product</h3>
             {/* Modal Content */}
             <form onSubmit={formik.handleSubmit}>
+              {/* ... rest of the form code remains the same ... */}
               <div className="mb-4">
                 <label htmlFor="productName" className="block text-gray-700 font-medium">
                   Product Name
@@ -194,7 +242,7 @@ const MyProduct = () => {
               </div>
               <div className="mb-4">
                 <label htmlFor="category" className="block text-gray-700 font-medium">
-                  Product price
+                  Product Category
                 </label>
                 <select
                   id="category"
@@ -209,7 +257,7 @@ const MyProduct = () => {
                 >
                   <option value="" label="Select category">Select category</option>
                   {
-                    categories?.data && categories?.data.map((item, index) =>
+                    categories?.data && categories?.data.map((item) =>
                       <option key={item.id} value={item.id}>{item.name}</option>
                     )
                   }
@@ -256,6 +304,46 @@ const MyProduct = () => {
           </div>
         </div>
       )}
+
+      {/* Listing all products grouped by category */}
+      <div>
+        {products?.data && Object.entries(products.data).length > 0 ? (
+          Object.entries(products.data).map(([category, items], categoryIndex) => (
+            <div key={categoryIndex} className="mb-8">
+              {/* Category Name */}
+              <h2 className="text-xl font-bold text-gray-800 mb-4">{category}</h2>
+
+              {/* Products under this category */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-6">
+                {items.length > 0 ? (
+                  items.map((item, index) => (
+                    <div key={index} className="max-w-sm mx-auto bg-white border border-gray-200 rounded-lg shadow-lg">
+                      <img
+                        src={item.image}
+                        alt={item.name}
+                        className="rounded-t-lg w-full h-48 object-cover"
+                      />
+                      <div className="p-4">
+                        <h3 className="text-lg font-semibold text-gray-800">{item.name}</h3>
+                        <p className="text-sm text-gray-600 mt-2">{item.description}</p>
+                        <p className="text-lg text-green-500 font-bold mt-4">${item.price}</p>
+                        <button className="w-full mt-4 px-4 py-2 bg-blue-500 text-white font-medium rounded hover:bg-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-400">
+                          Buy Now
+                        </button>
+                      </div>
+                    </div>
+                  ))
+                ) : (
+                  <p className="col-span-full text-center text-gray-600">No products found in this category.</p>
+                )}
+              </div>
+            </div>
+          ))
+        ) : (
+          <p className="text-center text-gray-600">No products found.</p>
+        )}
+      </div>
+
     </div>
   );
 };
